@@ -1,0 +1,194 @@
+import discord
+import os
+import sys
+import http.server
+import socketserver
+import threading
+import socket
+import aiohttp
+import gc
+
+# PENTING: Memaksa sistem Python menggunakan IPv4 saja (mengatasi eror IPv6 di cloud).
+orig_getaddrinfo = socket.getaddrinfo
+def getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
+    return orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+socket.getaddrinfo = getaddrinfo_ipv4
+
+# PENTING: Menonaktifkan verifikasi SSL secara global di aiohttp (mengatasi eror ssl:default karena sertifikat Linux minimal).
+orig_connector_init = aiohttp.TCPConnector.__init__
+def patched_connector_init(self, *args, **kwargs):
+    kwargs['ssl'] = False  # Matikan validasi sertifikat SSL agar koneksi langsung tembus
+    orig_connector_init(self, *args, **kwargs)
+aiohttp.TCPConnector.__init__ = patched_connector_init
+
+# Konfigurasi Path File
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TOKEN_FILE = os.path.join(BASE_DIR, 'token.txt')
+GEMINI_KEY_FILE = os.path.join(BASE_DIR, 'gemini_key.txt')
+SYSTEM_PROMPT_FILE = os.path.join(BASE_DIR, 'system_prompt.txt')
+
+# Dictionary untuk menyimpan riwayat chat (Memory) per Channel atau User
+conversation_histories = {}
+MAX_HISTORY_TURNS = 20  # Batas maksimal giliran chat yang diingat
+
+# Inisialisasi Discord Intents
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+client = discord.Client(intents=intents)
+
+# Membaca Data Konfigurasi (Mendukung Environment Variables untuk Cloud)
+def read_config_files():
+    discord_token = os.environ.get('DISCORD_TOKEN')
+    gemini_key = os.environ.get('GEMINI_KEY')
+
+    if not discord_token:
+        if not os.path.exists(TOKEN_FILE):
+            print(f"Error: Token tidak ditemukan di Env maupun file '{TOKEN_FILE}'!")
+            sys.exit(1)
+        with open(TOKEN_FILE, 'r', encoding='utf-8') as f:
+            discord_token = f.read().strip()
+
+    if not gemini_key:
+        if not os.path.exists(GEMINI_KEY_FILE):
+            print(f"Error: API Key tidak ditemukan di Env maupun file '{GEMINI_KEY_FILE}'!")
+            sys.exit(1)
+        with open(GEMINI_KEY_FILE, 'r', encoding='utf-8') as f:
+            gemini_key = f.read().strip()
+
+    system_prompt = ""
+    if os.path.exists(SYSTEM_PROMPT_FILE):
+        with open(SYSTEM_PROMPT_FILE, 'r', encoding='utf-8') as f:
+            system_prompt = f.read().strip()
+    else:
+        print("Warning: File 'system_prompt.txt' tidak ditemukan.")
+
+    return discord_token, gemini_key, system_prompt
+
+# Memuat konfigurasi
+DISCORD_TOKEN, GEMINI_KEY, SYSTEM_PROMPT = read_config_files()
+
+# Fungsi untuk memanggil Gemini API secara langsung menggunakan aiohttp (sangat hemat RAM!)
+async def generate_gemini_content(contents):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+    payload = {
+        "contents": contents,
+        "systemInstruction": {
+            "parts": [{"text": SYSTEM_PROMPT}]
+        }
+    }
+    
+    # Gunakan session aiohttp untuk melakukan request REST API
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload) as response:
+            if response.status == 200:
+                data = await response.json()
+                try:
+                    return data['candidates'][0]['content']['parts'][0]['text']
+                except (KeyError, IndexError) as e:
+                    raise Exception(f"Struktur respons API di luar dugaan: {data}")
+            else:
+                error_text = await response.text()
+                raise Exception(f"Gemini API mengembalikan status {response.status}: {error_text}")
+
+@client.event
+async def on_ready():
+    print(f"\n=========================================")
+    print(f"   SEII BOT AKTIF 100% (MOD MEMORI MINIM)")
+    print(f"   Login sebagai: {client.user}")
+    print(f"=========================================")
+    print(f"Menunggu pesan masuk di Discord...\n")
+
+@client.event
+async def on_message(message):
+    if message.author == client.user:
+        return
+
+    is_dm = isinstance(message.channel, discord.DMChannel)
+    is_mentioned = client.user.mentioned_in(message)
+
+    if is_dm or is_mentioned:
+        async with message.channel.typing():
+            clean_prompt = message.content
+            if is_mentioned:
+                bot_mention = f"<@!{client.user.id}>"
+                bot_mention_alt = f"<@{client.user.id}>"
+                clean_prompt = clean_prompt.replace(bot_mention, "").replace(bot_mention_alt, "").strip()
+
+            if not clean_prompt:
+                await message.reply("Yo, ada yang bisa gw bantu?")
+                return
+
+            chat_key = message.channel.id if not is_dm else message.author.id
+
+            if chat_key not in conversation_histories:
+                conversation_histories[chat_key] = []
+
+            history = conversation_histories[chat_key]
+
+            history.append({
+                "role": "user",
+                "parts": [{"text": clean_prompt}]
+            })
+
+            if len(history) > MAX_HISTORY_TURNS:
+                conversation_histories[chat_key] = history[-MAX_HISTORY_TURNS:]
+                history = conversation_histories[chat_key]
+
+            print(f"[LOG] Memproses pesan dari {message.author} di #{message.channel if not is_dm else 'DM'}")
+            print(f"      Teks: '{clean_prompt}'")
+
+            try:
+                # Memanggil Gemini secara direct REST API
+                response_text = await generate_gemini_content(history)
+
+                history.append({
+                    "role": "model",
+                    "parts": [{"text": response_text}]
+                })
+
+                print(f"      [OK] Respons Gemini sukses didapatkan!")
+
+                if len(response_text) > 2000:
+                    parts = [response_text[i:i+1900] for i in range(0, len(response_text), 1900)]
+                    for idx, part in enumerate(parts):
+                        if idx == 0:
+                            await message.reply(part)
+                        else:
+                            await message.channel.send(part)
+                else:
+                    await message.reply(response_text)
+
+            except Exception as e:
+                print(f"      [ERROR] Gagal memanggil Gemini/mengirim chat: {e}")
+                await message.reply("Aduh sori Bro, kepala gw lagi pusing nih (ada kendala koneksi ke otak AI). Coba tanya lagi bentar ya!")
+            finally:
+                # Paksa bersihkan RAM setiap kali selesai memproses chat
+                gc.collect()
+
+# Web Server Dummy untuk Lolos Health Check
+def run_dummy_server():
+    PORT = int(os.environ.get('PORT', 7860))  # Gunakan port dari Render, default 7860
+    Handler = http.server.SimpleHTTPRequestHandler
+
+    class SilentHandler(Handler):
+        def log_message(self, format, *args):
+            pass
+
+    socketserver.TCPServer.allow_reuse_address = True
+    try:
+        with socketserver.TCPServer(("", PORT), SilentHandler) as httpd:
+            print(f"Server dummy berjalan di port {PORT} untuk health check cloud.")
+            httpd.serve_forever()
+    except Exception as e:
+        print(f"Peringatan: Gagal menjalankan server dummy: {e}")
+
+if __name__ == "__main__":
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+
+    try:
+        client.run(DISCORD_TOKEN)
+    except discord.errors.LoginFailure:
+        print("Error: Token Discord yang dimasukkan salah!")
+    except Exception as e:
+        print(f"Error saat menjalankan bot: {e}")

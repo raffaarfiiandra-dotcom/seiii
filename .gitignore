@@ -1,0 +1,6 @@
+token.txt
+gemini_key.txt
+*.metadata
+*.zip
+*.jsonl
+*.md

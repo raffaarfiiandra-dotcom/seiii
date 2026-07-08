@@ -68,9 +68,9 @@ def read_config_files():
 # Memuat konfigurasi
 DISCORD_TOKEN, GEMINI_KEY, SYSTEM_PROMPT = read_config_files()
 
-# Membaca model dari environment, default gemini-1.5-flash karena gemini-2.5-flash dibatasi sangat ketat (hanya 20 request per hari di free tier).
-# Sedangkan gemini-1.5-flash gratisan memberikan jatah 1.500 request per hari (75x lipat lebih banyak)!
-GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-1.5-flash')
+# Membaca model dari environment, default gemini-flash-latest (1.5 Flash) karena gemini-2.5-flash dibatasi sangat ketat (hanya 20 request per hari di free tier).
+# Sedangkan gemini-flash-latest gratisan memberikan jatah 1.500 request per hari (75x lipat lebih banyak)!
+GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-flash-latest')
 
 import asyncio
 

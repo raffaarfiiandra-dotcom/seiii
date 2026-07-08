@@ -68,9 +68,13 @@ def read_config_files():
 # Memuat konfigurasi
 DISCORD_TOKEN, GEMINI_KEY, SYSTEM_PROMPT = read_config_files()
 
+# Membaca model dari environment, default gemini-1.5-flash karena gemini-2.5-flash dibatasi sangat ketat (hanya 20 request per hari di free tier).
+# Sedangkan gemini-1.5-flash gratisan memberikan jatah 1.500 request per hari (75x lipat lebih banyak)!
+GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-1.5-flash')
+
 # Fungsi untuk memanggil Gemini API secara langsung menggunakan aiohttp (sangat hemat RAM!)
 async def generate_gemini_content(contents):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_KEY}"
     payload = {
         "contents": contents,
         "systemInstruction": {

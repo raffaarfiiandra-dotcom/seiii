@@ -84,7 +84,7 @@ async def generate_gemini_content(contents):
         }
     }
     
-    max_retries = 3
+    max_retries = 5
     for attempt in range(max_retries):
         try:
             # Gunakan session aiohttp untuk melakukan request REST API
@@ -96,18 +96,14 @@ async def generate_gemini_content(contents):
                             return data['candidates'][0]['content']['parts'][0]['text']
                         except (KeyError, IndexError) as e:
                             raise Exception(f"Struktur respons API di luar dugaan: {data}")
-                    elif response.status == 503 and attempt < max_retries - 1:
-                        # Jika 503 (High Demand), tunggu 1.5 detik lalu coba lagi secara otomatis
-                        print(f"      [WARNING] Gemini API sibuk (503). Mencoba ulang dalam 1.5 detik... (Percobaan {attempt + 1}/{max_retries})")
-                        await asyncio.sleep(1.5)
-                        continue
                     else:
                         error_text = await response.text()
                         raise Exception(f"Gemini API mengembalikan status {response.status}: {error_text}")
         except Exception as e:
             if attempt < max_retries - 1:
-                print(f"      [WARNING] Koneksi API gagal ({e}). Mencoba ulang dalam 1.5 detik... (Percobaan {attempt + 1}/{max_retries})")
-                await asyncio.sleep(1.5)
+                wait_time = 3 * (attempt + 1) # Tunggu makin lama: 3s, 6s, 9s, 12s
+                print(f"      [WARNING] Gemini API sibuk/gagal. Mencoba ulang dalam {wait_time} detik... (Percobaan {attempt + 1}/{max_retries})")
+                await asyncio.sleep(wait_time)
                 continue
             raise e
 

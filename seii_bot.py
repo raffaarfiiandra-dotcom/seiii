@@ -8,6 +8,7 @@ import socket
 import aiohttp
 import gc
 import base64
+import datetime
 
 # PENTING: Memaksa sistem Python menggunakan IPv4 saja (mengatasi eror IPv6 di cloud).
 orig_getaddrinfo = socket.getaddrinfo
@@ -77,11 +78,15 @@ import asyncio
 
 # Fungsi untuk memanggil Gemini API secara langsung menggunakan aiohttp (sangat hemat RAM!)
 async def generate_gemini_content(contents):
+    # Menyuntikkan waktu saat ini agar bot tidak halusinasi soal tahun
+    current_time = datetime.datetime.now().strftime("%d %B %Y, %H:%M:%S")
+    dynamic_prompt = f"{SYSTEM_PROMPT}\n\n[INFO SISTEM CRITICAL]\nHari ini adalah tanggal {current_time}. Tahun ini adalah 2026. Jika pengguna memberikan screenshot atau info terbaru (seperti promo Google AI Pro 2026), percayalah pada data tersebut dan jangan berasumsi bahwa itu editan hanya karena database lamamu tidak mengetahuinya."
+    
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_KEY}"
     payload = {
         "contents": contents,
         "systemInstruction": {
-            "parts": [{"text": SYSTEM_PROMPT}]
+            "parts": [{"text": dynamic_prompt}]
         }
     }
     

@@ -9,6 +9,7 @@ import aiohttp
 import gc
 import base64
 import datetime
+from duckduckgo_search import DDGS
 
 # PENTING: Memaksa sistem Python menggunakan IPv4 saja (mengatasi eror IPv6 di cloud).
 orig_getaddrinfo = socket.getaddrinfo
@@ -87,7 +88,23 @@ async def generate_gemini_content(contents):
         "contents": contents,
         "systemInstruction": {
             "parts": [{"text": dynamic_prompt}]
-        }
+        },
+        "tools": [{
+            "function_declarations": [{
+                "name": "search_web",
+                "description": "Gunakan fungsi ini SECARA PROAKTIF untuk mencari informasi, berita, atau harga terbaru di internet jika kamu tidak yakin.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "query": {
+                            "type": "STRING",
+                            "description": "Kata kunci pencarian internet (contoh: 'harga ram ddr5 32gb 2026' atau 'berita hari ini')"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }]
+        }]
     }
     
     max_retries = 5
@@ -99,7 +116,54 @@ async def generate_gemini_content(contents):
                     if response.status == 200:
                         data = await response.json()
                         try:
-                            return data['candidates'][0]['content']['parts'][0]['text']
+                            part = data['candidates'][0]['content']['parts'][0]
+                            
+                            # Cek apakah model ingin melakukan pencarian web
+                            if 'functionCall' in part:
+                                func_name = part['functionCall']['name']
+                                if func_name == "search_web":
+                                    query = part['functionCall']['args'].get('query', '')
+                                    print(f"[INFO] Gemini ingin mencari di internet: '{query}'")
+                                    
+                                    try:
+                                        def do_search():
+                                            results = DDGS().text(query, max_results=3)
+                                            # DDGS returns a list of dicts in recent versions, or generator. Wrap safely.
+                                            return list(results) if results else []
+                                        
+                                        results_list = await asyncio.to_thread(do_search)
+                                        search_results = []
+                                        for r in results_list:
+                                            search_results.append(f"Title: {r.get('title', '')}\nBody: {r.get('body', '')}")
+                                        search_result_text = "\n\n".join(search_results)
+                                        
+                                        if not search_result_text.strip():
+                                            search_result_text = "Tidak ada hasil pencarian."
+                                    except Exception as e:
+                                        search_result_text = f"Error saat mencari: {e}"
+                                    
+                                    print(f"[INFO] Hasil pencarian didapat, mengirim kembali ke Gemini...")
+                                    
+                                    # Rekursif panggil API lagi dengan menyertakan hasil pencarian
+                                    new_contents = contents.copy()
+                                    new_contents.append({
+                                        "role": "model",
+                                        "parts": [{"functionCall": part['functionCall']}]
+                                    })
+                                    new_contents.append({
+                                        "role": "function",
+                                        "parts": [{"functionResponse": {
+                                            "name": "search_web",
+                                            "response": {"result": search_result_text}
+                                        }}]
+                                    })
+                                    return await generate_gemini_content(new_contents)
+                                else:
+                                    return "Gw bingung, otak gw nyuruh panggil fungsi yang ga gw kenal."
+                            elif 'text' in part:
+                                return part['text']
+                            else:
+                                raise Exception("Tidak ada teks atau functionCall dalam response.")
                         except (KeyError, IndexError) as e:
                             raise Exception(f"Struktur respons API di luar dugaan: {data}")
                     else:
@@ -108,7 +172,7 @@ async def generate_gemini_content(contents):
         except Exception as e:
             if attempt < max_retries - 1:
                 wait_time = 3 * (attempt + 1) # Tunggu makin lama: 3s, 6s, 9s, 12s
-                print(f"      [WARNING] Gemini API sibuk/gagal. Mencoba ulang dalam {wait_time} detik... (Percobaan {attempt + 1}/{max_retries})")
+                print(f"      [WARNING] Gemini API sibuk/gagal. Mencoba ulang dalam {wait_time} detik... (Percobaan {attempt + 1}/{max_retries}) - Error: {e}")
                 await asyncio.sleep(wait_time)
                 continue
             raise e

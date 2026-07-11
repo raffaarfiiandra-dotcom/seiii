@@ -7,6 +7,7 @@ import threading
 import socket
 import aiohttp
 import gc
+import base64
 
 # PENTING: Memaksa sistem Python menggunakan IPv4 saja (mengatasi eror IPv6 di cloud).
 orig_getaddrinfo = socket.getaddrinfo
@@ -131,7 +132,30 @@ async def on_message(message):
                 bot_mention_alt = f"<@{client.user.id}>"
                 clean_prompt = clean_prompt.replace(bot_mention, "").replace(bot_mention_alt, "").strip()
 
-            if not clean_prompt:
+            user_parts = []
+            if clean_prompt:
+                user_parts.append({"text": clean_prompt})
+            
+            # Proses attachment (gambar)
+            for attachment in message.attachments:
+                if attachment.content_type and attachment.content_type.startswith("image/"):
+                    if attachment.size > 5 * 1024 * 1024:
+                        await message.reply(f"Waduh, gambar `{attachment.filename}` kegedean Bro (maksimal 5MB biar otak gw ga meleduk).")
+                        return
+                    
+                    try:
+                        image_bytes = await attachment.read()
+                        base64_data = base64.b64encode(image_bytes).decode('utf-8')
+                        user_parts.append({
+                            "inlineData": {
+                                "mimeType": attachment.content_type,
+                                "data": base64_data
+                            }
+                        })
+                    except Exception as e:
+                        print(f"[ERROR] Gagal memproses gambar: {e}")
+
+            if not user_parts:
                 await message.reply("Yo, ada yang bisa gw bantu?")
                 return
 
@@ -144,7 +168,7 @@ async def on_message(message):
 
             history.append({
                 "role": "user",
-                "parts": [{"text": clean_prompt}]
+                "parts": user_parts
             })
 
             if len(history) > MAX_HISTORY_TURNS:

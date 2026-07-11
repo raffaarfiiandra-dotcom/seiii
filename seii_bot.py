@@ -87,12 +87,7 @@ async def generate_gemini_content(contents):
         "contents": contents,
         "systemInstruction": {
             "parts": [{"text": dynamic_prompt}]
-        },
-        "tools": [
-            {
-                "googleSearch": {}
-            }
-        ]
+        }
     }
     
     max_retries = 5

@@ -22,6 +22,7 @@ import base64
 import datetime
 from duckduckgo_search import DDGS
 import json
+import re
 
 # PENTING: Memaksa sistem Python menggunakan IPv4 saja (mengatasi eror IPv6 di cloud).
 orig_getaddrinfo = socket.getaddrinfo
@@ -176,6 +177,46 @@ async def generate_groq_content(messages, has_image=False):
                         return message_data.get('content', '')
                     else:
                         error_text = await response.text()
+                        
+                        # Fallback Anti-Hallucination untuk Groq Llama 3 tool calling
+                        if response.status == 400 and "tool_use_failed" in error_text:
+                            try:
+                                error_json = json.loads(error_text)
+                                failed_gen = error_json.get("error", {}).get("failed_generation", "")
+                                if "search_web" in failed_gen:
+                                    match = re.search(r'\{.*\}', failed_gen)
+                                    if match:
+                                        args = json.loads(match.group(0))
+                                        query = args.get('query', '')
+                                        print(f"[INFO] Fallback tool call: Mencegat query '{query}' dari error 400 Groq.")
+                                        
+                                        def do_search():
+                                            results = DDGS().text(query, max_results=3)
+                                            return list(results) if results else []
+                                        
+                                        results_list = await asyncio.to_thread(do_search)
+                                        search_results = []
+                                        for r in results_list:
+                                            search_results.append(f"Title: {r.get('title', '')}\nLink: {r.get('href', '')}\nBody: {r.get('body', '')}")
+                                        search_result_text = "\n\n".join(search_results)
+                                        
+                                        if not search_result_text.strip():
+                                            search_result_text = "Tidak ada hasil pencarian."
+                                            
+                                        print(f"[INFO] Hasil pencarian didapat (Fallback), mengirim kembali ke Groq...")
+                                        new_messages = messages.copy()
+                                        new_messages.append({
+                                            "role": "assistant", 
+                                            "content": f"Baik, saya akan mencari '{query}' di internet."
+                                        })
+                                        new_messages.append({
+                                            "role": "user", 
+                                            "content": f"[HASIL PENCARIAN INTERNET UNTUK '{query}']:\n{search_result_text}\n\nTolong jawab pertanyaan asliku menggunakan data tersebut, dan sertakan link sumbernya!"
+                                        })
+                                        return await generate_groq_content(new_messages, has_image)
+                            except Exception as parse_e:
+                                print(f"[WARNING] Gagal mengekstrak fallback JSON: {parse_e}")
+                        
                         raise Exception(f"Groq API mengembalikan status {response.status}: {error_text}")
         except Exception as e:
             if attempt < max_retries - 1:

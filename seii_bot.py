@@ -1,6 +1,17 @@
-import discord
 import os
 import sys
+import subprocess
+
+def install_pkg(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+try:
+    import duckduckgo_search
+except ImportError:
+    print(f"[SYSTEM] Menginstal module duckduckgo-search yang hilang...")
+    install_pkg("duckduckgo-search")
+
+import discord
 import http.server
 import socketserver
 import threading

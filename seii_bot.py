@@ -6,10 +6,10 @@ def install_pkg(package):
     subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 try:
-    import duckduckgo_search
+    from ddgs import DDGS
 except ImportError:
-    print(f"[SYSTEM] Menginstal module duckduckgo-search yang hilang...")
-    install_pkg("duckduckgo-search")
+    print(f"[SYSTEM] Menginstal module ddgs yang hilang...")
+    install_pkg("ddgs")
 
 import discord
 import http.server
@@ -20,7 +20,6 @@ import aiohttp
 import gc
 import base64
 import datetime
-from duckduckgo_search import DDGS
 import json
 import re
 

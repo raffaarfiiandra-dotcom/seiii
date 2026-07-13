@@ -151,7 +151,7 @@ async def generate_groq_content(messages, has_image=False):
                                     results_list = await asyncio.to_thread(do_search)
                                     search_results = []
                                     for r in results_list:
-                                        search_results.append(f"Title: {r.get('title', '')}\nBody: {r.get('body', '')}")
+                                        search_results.append(f"Title: {r.get('title', '')}\nLink: {r.get('href', '')}\nBody: {r.get('body', '')}")
                                     search_result_text = "\n\n".join(search_results)
                                     
                                     if not search_result_text.strip():

@@ -93,7 +93,7 @@ async def generate_groq_content(messages, has_image=False):
     
     # Pilih model: Jika ada gambar, pakai vision. Jika teks saja, pakai versatile.
     # Versatile lebih ngebut dan pintar untuk teks, tapi error kalau dikasih gambar.
-    model_name = "llama-3.2-90b-vision-preview" if has_image else "llama-3.3-70b-versatile"
+    model_name = "meta-llama/llama-4-scout-17b-16e-instruct" if has_image else "llama-3.3-70b-versatile"
     
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {

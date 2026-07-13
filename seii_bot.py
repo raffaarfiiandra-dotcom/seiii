@@ -92,8 +92,17 @@ async def generate_groq_content(messages, has_image=False):
     dynamic_prompt = f"{SYSTEM_PROMPT}\n\n[INFO SISTEM CRITICAL]\nHari ini adalah tanggal {current_time}. Tahun ini adalah 2026. Kamu sekarang berjalan menggunakan Groq API."
     
     # Pilih model: Jika ada gambar, pakai vision. Jika teks saja, pakai versatile.
-    # Versatile lebih ngebut dan pintar untuk teks, tapi error kalau dikasih gambar.
     model_name = "meta-llama/llama-4-scout-17b-16e-instruct" if has_image else "llama-3.3-70b-versatile"
+    
+    # Sanitize history untuk model teks (Llama 3.3 Versatile menolak list content)
+    sanitized_messages = []
+    for msg in messages:
+        msg_copy = msg.copy()
+        if not has_image and isinstance(msg_copy.get("content"), list):
+            # Ekstrak teks saja, buang gambarnya dari memori
+            text_parts = [item["text"] for item in msg_copy["content"] if item.get("type") == "text"]
+            msg_copy["content"] = " ".join(text_parts) if text_parts else "[Gambar telah dihapus dari memori untuk menghemat token]"
+        sanitized_messages.append(msg_copy)
     
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
@@ -102,7 +111,7 @@ async def generate_groq_content(messages, has_image=False):
     }
     
     # Masukkan system prompt ke dalam list messages
-    full_messages = [{"role": "system", "content": dynamic_prompt}] + messages
+    full_messages = [{"role": "system", "content": dynamic_prompt}] + sanitized_messages
     
     payload = {
         "model": model_name,

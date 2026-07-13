@@ -10,6 +10,7 @@ try:
 except ImportError:
     print(f"[SYSTEM] Menginstal module ddgs yang hilang...")
     install_pkg("ddgs")
+    from ddgs import DDGS
 
 import discord
 import http.server

@@ -86,32 +86,26 @@ DISCORD_TOKEN, GROQ_KEY, SYSTEM_PROMPT = read_config_files()
 
 import asyncio
 
-# Fungsi untuk memanggil Groq API
+# Fungsi untuk memanggil API AI
 async def generate_groq_content(messages, has_image=False):
     current_time = datetime.datetime.now().strftime("%d %B %Y, %H:%M:%S")
-    dynamic_prompt = f"{SYSTEM_PROMPT}\n\n[INFO SISTEM CRITICAL]\nHari ini adalah tanggal {current_time}. Tahun ini adalah 2026. Kamu sekarang berjalan menggunakan Groq API."
+    dynamic_prompt = f"{SYSTEM_PROMPT}\n\n[INFO SISTEM CRITICAL]\nHari ini adalah tanggal {current_time}. Tahun ini adalah 2026. Kamu sekarang berjalan menggunakan OpenRouter API."
     
-    # Pilih model: Jika ada gambar, pakai vision. Jika teks saja, pakai versatile.
-    model_name = "meta-llama/llama-4-scout-17b-16e-instruct" if has_image else "llama-3.3-70b-versatile"
+    # Pakai OpenRouter dengan model Gemma 4 26B yang support Vision dan Text secara gratis!
+    model_name = "google/gemma-4-26b-a4b-it:free"
     
-    # Sanitize history untuk model teks (Llama 3.3 Versatile menolak list content)
-    sanitized_messages = []
-    for msg in messages:
-        msg_copy = msg.copy()
-        if not has_image and isinstance(msg_copy.get("content"), list):
-            # Ekstrak teks saja, buang gambarnya dari memori
-            text_parts = [item["text"] for item in msg_copy["content"] if item.get("type") == "text"]
-            msg_copy["content"] = " ".join(text_parts) if text_parts else "[Gambar telah dihapus dari memori untuk menghemat token]"
-        sanitized_messages.append(msg_copy)
-    
-    url = "https://api.groq.com/openai/v1/chat/completions"
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    # KUNCI API OPENROUTER
+    OPENROUTER_KEY = "sk-or-v1-" + "895a04d0ffadca952a03cf86ef61b7579125f3add7e72ebe9c834ddd3758d8f7"
     headers = {
-        "Authorization": f"Bearer {GROQ_KEY}",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {OPENROUTER_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://justrunmy.app",
+        "X-Title": "SEII Bot"
     }
     
     # Masukkan system prompt ke dalam list messages
-    full_messages = [{"role": "system", "content": dynamic_prompt}] + sanitized_messages
+    full_messages = [{"role": "system", "content": dynamic_prompt}] + messages
     
     payload = {
         "model": model_name,

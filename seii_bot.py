@@ -10,6 +10,7 @@ import gc
 import base64
 import datetime
 from duckduckgo_search import DDGS
+import json
 
 # PENTING: Memaksa sistem Python menggunakan IPv4 saja (mengatasi eror IPv6 di cloud).
 orig_getaddrinfo = socket.getaddrinfo
@@ -27,12 +28,12 @@ aiohttp.TCPConnector.__init__ = patched_connector_init
 # Konfigurasi Path File
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TOKEN_FILE = os.path.join(BASE_DIR, 'token.txt')
-GEMINI_KEY_FILE = os.path.join(BASE_DIR, 'gemini_key.txt')
+GROQ_KEY_FILE = os.path.join(BASE_DIR, 'groq_key.txt')
 SYSTEM_PROMPT_FILE = os.path.join(BASE_DIR, 'system_prompt.txt')
 
 # Dictionary untuk menyimpan riwayat chat (Memory) per Channel atau User
 conversation_histories = {}
-MAX_HISTORY_TURNS = 20  # Batas maksimal giliran chat yang diingat
+MAX_HISTORY_TURNS = 20  # Batas giliran chat
 
 # Inisialisasi Discord Intents
 intents = discord.Intents.default()
@@ -40,10 +41,10 @@ intents.message_content = True
 intents.members = True
 client = discord.Client(intents=intents)
 
-# Membaca Data Konfigurasi (Mendukung Environment Variables untuk Cloud)
+# Membaca Data Konfigurasi
 def read_config_files():
     discord_token = os.environ.get('DISCORD_TOKEN')
-    gemini_key = os.environ.get('GEMINI_KEY')
+    groq_key = os.environ.get('GROQ_KEY')
 
     if not discord_token:
         if not os.path.exists(TOKEN_FILE):
@@ -52,127 +53,123 @@ def read_config_files():
         with open(TOKEN_FILE, 'r', encoding='utf-8') as f:
             discord_token = f.read().strip()
 
-    if not gemini_key:
-        if not os.path.exists(GEMINI_KEY_FILE):
-            print(f"Error: API Key tidak ditemukan di Env maupun file '{GEMINI_KEY_FILE}'!")
+    if not groq_key:
+        if os.path.exists(GROQ_KEY_FILE):
+            with open(GROQ_KEY_FILE, 'r', encoding='utf-8') as f:
+                groq_key = f.read().strip()
+        else:
+            print(f"Error: API Key tidak ditemukan di Env maupun file '{GROQ_KEY_FILE}'!")
             sys.exit(1)
-        with open(GEMINI_KEY_FILE, 'r', encoding='utf-8') as f:
-            gemini_key = f.read().strip()
 
     system_prompt = ""
     if os.path.exists(SYSTEM_PROMPT_FILE):
         with open(SYSTEM_PROMPT_FILE, 'r', encoding='utf-8') as f:
             system_prompt = f.read().strip()
     else:
-        print("Warning: File 'system_prompt.txt' tidak ditemukan.")
+        system_prompt = "Kamu adalah asisten discord."
 
-    return discord_token, gemini_key, system_prompt
+    return discord_token, groq_key, system_prompt
 
-# Memuat konfigurasi
-DISCORD_TOKEN, GEMINI_KEY, SYSTEM_PROMPT = read_config_files()
-
-# Membaca model dari environment, default gemini-flash-latest (1.5 Flash) karena gemini-2.5-flash dibatasi sangat ketat (hanya 20 request per hari di free tier).
-# Sedangkan gemini-flash-latest gratisan memberikan jatah 1.500 request per hari (75x lipat lebih banyak)!
-GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-flash-latest')
+DISCORD_TOKEN, GROQ_KEY, SYSTEM_PROMPT = read_config_files()
 
 import asyncio
 
-# Fungsi untuk memanggil Gemini API secara langsung menggunakan aiohttp (sangat hemat RAM!)
-async def generate_gemini_content(contents):
-    # Menyuntikkan waktu saat ini agar bot tidak halusinasi soal tahun
+# Fungsi untuk memanggil Groq API
+async def generate_groq_content(messages, has_image=False):
     current_time = datetime.datetime.now().strftime("%d %B %Y, %H:%M:%S")
-    dynamic_prompt = f"{SYSTEM_PROMPT}\n\n[INFO SISTEM CRITICAL]\nHari ini adalah tanggal {current_time}. Tahun ini adalah 2026. Jika pengguna memberikan screenshot atau info terbaru (seperti promo Google AI Pro 2026), percayalah pada data tersebut dan jangan berasumsi bahwa itu editan hanya karena database lamamu tidak mengetahuinya."
+    dynamic_prompt = f"{SYSTEM_PROMPT}\n\n[INFO SISTEM CRITICAL]\nHari ini adalah tanggal {current_time}. Tahun ini adalah 2026. Kamu sekarang berjalan menggunakan Groq API."
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_KEY}"
+    # Pilih model: Jika ada gambar, pakai vision. Jika teks saja, pakai versatile.
+    # Versatile lebih ngebut dan pintar untuk teks, tapi error kalau dikasih gambar.
+    model_name = "llama-3.2-90b-vision-preview" if has_image else "llama-3.3-70b-versatile"
+    
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    # Masukkan system prompt ke dalam list messages
+    full_messages = [{"role": "system", "content": dynamic_prompt}] + messages
+    
     payload = {
-        "contents": contents,
-        "systemInstruction": {
-            "parts": [{"text": dynamic_prompt}]
-        },
+        "model": model_name,
+        "messages": full_messages,
         "tools": [{
-            "function_declarations": [{
+            "type": "function",
+            "function": {
                 "name": "search_web",
                 "description": "Gunakan fungsi ini SECARA PROAKTIF untuk mencari informasi, berita, atau harga terbaru di internet jika kamu tidak yakin.",
                 "parameters": {
-                    "type": "OBJECT",
+                    "type": "object",
                     "properties": {
                         "query": {
-                            "type": "STRING",
+                            "type": "string",
                             "description": "Kata kunci pencarian internet (contoh: 'harga ram ddr5 32gb 2026' atau 'berita hari ini')"
                         }
                     },
                     "required": ["query"]
                 }
-            }]
-        }]
+            }
+        }],
+        "tool_choice": "auto"
     }
     
     max_retries = 5
     for attempt in range(max_retries):
         try:
-            # Gunakan session aiohttp untuk melakukan request REST API
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload) as response:
+                async with session.post(url, headers=headers, json=payload) as response:
                     if response.status == 200:
                         data = await response.json()
-                        try:
-                            part = data['candidates'][0]['content']['parts'][0]
-                            
-                            # Cek apakah model ingin melakukan pencarian web
-                            if 'functionCall' in part:
-                                func_name = part['functionCall']['name']
-                                if func_name == "search_web":
-                                    query = part['functionCall']['args'].get('query', '')
-                                    print(f"[INFO] Gemini ingin mencari di internet: '{query}'")
+                        message_data = data['choices'][0]['message']
+                        
+                        # Cek apakah model ingin memanggil tool (search_web)
+                        if message_data.get('tool_calls'):
+                            tool_call = message_data['tool_calls'][0]
+                            if tool_call['function']['name'] == "search_web":
+                                try:
+                                    args = json.loads(tool_call['function']['arguments'])
+                                    query = args.get('query', '')
+                                    print(f"[INFO] Groq ingin mencari di internet: '{query}'")
                                     
-                                    try:
-                                        def do_search():
-                                            results = DDGS().text(query, max_results=3)
-                                            # DDGS returns a list of dicts in recent versions, or generator. Wrap safely.
-                                            return list(results) if results else []
-                                        
-                                        results_list = await asyncio.to_thread(do_search)
-                                        search_results = []
-                                        for r in results_list:
-                                            search_results.append(f"Title: {r.get('title', '')}\nBody: {r.get('body', '')}")
-                                        search_result_text = "\n\n".join(search_results)
-                                        
-                                        if not search_result_text.strip():
-                                            search_result_text = "Tidak ada hasil pencarian."
-                                    except Exception as e:
-                                        search_result_text = f"Error saat mencari: {e}"
+                                    def do_search():
+                                        results = DDGS().text(query, max_results=3)
+                                        return list(results) if results else []
                                     
-                                    print(f"[INFO] Hasil pencarian didapat, mengirim kembali ke Gemini...")
+                                    results_list = await asyncio.to_thread(do_search)
+                                    search_results = []
+                                    for r in results_list:
+                                        search_results.append(f"Title: {r.get('title', '')}\nBody: {r.get('body', '')}")
+                                    search_result_text = "\n\n".join(search_results)
                                     
-                                    # Rekursif panggil API lagi dengan menyertakan hasil pencarian
-                                    new_contents = contents.copy()
-                                    new_contents.append({
-                                        "role": "model",
-                                        "parts": [{"functionCall": part['functionCall']}]
-                                    })
-                                    new_contents.append({
-                                        "role": "function",
-                                        "parts": [{"functionResponse": {
-                                            "name": "search_web",
-                                            "response": {"result": search_result_text}
-                                        }}]
-                                    })
-                                    return await generate_gemini_content(new_contents)
-                                else:
-                                    return "Gw bingung, otak gw nyuruh panggil fungsi yang ga gw kenal."
-                            elif 'text' in part:
-                                return part['text']
-                            else:
-                                raise Exception("Tidak ada teks atau functionCall dalam response.")
-                        except (KeyError, IndexError) as e:
-                            raise Exception(f"Struktur respons API di luar dugaan: {data}")
+                                    if not search_result_text.strip():
+                                        search_result_text = "Tidak ada hasil pencarian."
+                                except Exception as e:
+                                    search_result_text = f"Error saat mencari: {e}"
+                                
+                                print(f"[INFO] Hasil pencarian didapat, mengirim kembali ke Groq...")
+                                
+                                # Rekursif panggil API lagi dengan menyertakan hasil pencarian
+                                new_messages = messages.copy()
+                                new_messages.append(message_data) # Tambahkan assistant's tool_call request
+                                new_messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call['id'],
+                                    "name": "search_web",
+                                    "content": search_result_text
+                                })
+                                return await generate_groq_content(new_messages, has_image)
+                        
+                        # Jika tidak ada tool calls, berarti itu adalah balasan teks biasa
+                        return message_data.get('content', '')
                     else:
                         error_text = await response.text()
-                        raise Exception(f"Gemini API mengembalikan status {response.status}: {error_text}")
+                        raise Exception(f"Groq API mengembalikan status {response.status}: {error_text}")
         except Exception as e:
             if attempt < max_retries - 1:
-                wait_time = 3 * (attempt + 1) # Tunggu makin lama: 3s, 6s, 9s, 12s
-                print(f"      [WARNING] Gemini API sibuk/gagal. Mencoba ulang dalam {wait_time} detik... (Percobaan {attempt + 1}/{max_retries}) - Error: {e}")
+                wait_time = 3 * (attempt + 1)
+                print(f"      [WARNING] Groq API gagal. Mencoba ulang dalam {wait_time} detik... ({e})")
                 await asyncio.sleep(wait_time)
                 continue
             raise e
@@ -180,7 +177,7 @@ async def generate_gemini_content(contents):
 @client.event
 async def on_ready():
     print(f"\n=========================================")
-    print(f"   SEII BOT AKTIF 100% (MOD MEMORI MINIM)")
+    print(f"   SEII BOT AKTIF 100% (GROQ ENGINE)")
     print(f"   Login sebagai: {client.user}")
     print(f"=========================================")
     print(f"Menunggu pesan masuk di Discord...\n")
@@ -201,13 +198,16 @@ async def on_message(message):
                 bot_mention_alt = f"<@{client.user.id}>"
                 clean_prompt = clean_prompt.replace(bot_mention, "").replace(bot_mention_alt, "").strip()
 
-            user_parts = []
+            content = []
             if clean_prompt:
-                user_parts.append({"text": clean_prompt})
+                content.append({"type": "text", "text": clean_prompt})
+            
+            has_image = False
             
             # Proses attachment (gambar)
             for attachment in message.attachments:
                 if attachment.content_type and attachment.content_type.startswith("image/"):
+                    has_image = True
                     if attachment.size > 5 * 1024 * 1024:
                         await message.reply(f"Waduh, gambar `{attachment.filename}` kegedean Bro (maksimal 5MB biar otak gw ga meleduk).")
                         return
@@ -215,18 +215,25 @@ async def on_message(message):
                     try:
                         image_bytes = await attachment.read()
                         base64_data = base64.b64encode(image_bytes).decode('utf-8')
-                        user_parts.append({
-                            "inlineData": {
-                                "mimeType": attachment.content_type,
-                                "data": base64_data
+                        content.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{attachment.content_type};base64,{base64_data}"
                             }
                         })
                     except Exception as e:
                         print(f"[ERROR] Gagal memproses gambar: {e}")
 
-            if not user_parts:
+            if not content:
                 await message.reply("Yo, ada yang bisa gw bantu?")
                 return
+
+            # Untuk Groq, jika hanya teks, content string biasa lebih stabil, meski list of dicts didukung.
+            # Namun karena kita pakai auto-switch model, kita bisa pass list of dicts.
+            if not has_image:
+                final_content = clean_prompt
+            else:
+                final_content = content
 
             chat_key = message.channel.id if not is_dm else message.author.id
 
@@ -237,7 +244,7 @@ async def on_message(message):
 
             history.append({
                 "role": "user",
-                "parts": user_parts
+                "content": final_content
             })
 
             if len(history) > MAX_HISTORY_TURNS:
@@ -248,42 +255,42 @@ async def on_message(message):
             print(f"      Teks: '{clean_prompt}'")
 
             try:
-                # Memanggil Gemini secara direct REST API
-                response_text = await generate_gemini_content(history)
+                # Memanggil Groq API
+                response_text = await generate_groq_content(history, has_image)
 
-                history.append({
-                    "role": "model",
-                    "parts": [{"text": response_text}]
-                })
+                # Simpan respons asisten ke memory
+                if response_text:
+                    history.append({
+                        "role": "assistant",
+                        "content": response_text
+                    })
 
-                print(f"      [OK] Respons Gemini sukses didapatkan!")
+                    print(f"      [OK] Respons Groq sukses didapatkan!")
 
-                if len(response_text) > 2000:
-                    parts = [response_text[i:i+1900] for i in range(0, len(response_text), 1900)]
-                    for idx, part in enumerate(parts):
-                        if idx == 0:
-                            await message.reply(part)
-                        else:
-                            await message.channel.send(part)
+                    if len(response_text) > 2000:
+                        parts = [response_text[i:i+1900] for i in range(0, len(response_text), 1900)]
+                        for idx, part in enumerate(parts):
+                            if idx == 0:
+                                await message.reply(part)
+                            else:
+                                await message.channel.send(part)
+                    else:
+                        await message.reply(response_text)
                 else:
-                    await message.reply(response_text)
+                    await message.reply("Maaf, otak gw nge-blank (respon kosong dari API).")
 
             except Exception as e:
-                print(f"      [ERROR] Gagal memanggil Gemini/mengirim chat: {e}")
+                print(f"      [ERROR] Gagal memanggil Groq/mengirim chat: {e}")
                 await message.reply("Aduh sori Bro, kepala gw lagi pusing nih (ada kendala koneksi ke otak AI). Coba tanya lagi bentar ya!")
             finally:
-                # Paksa bersihkan RAM setiap kali selesai memproses chat
                 gc.collect()
 
-# Web Server Dummy untuk Lolos Health Check
 def run_dummy_server():
-    PORT = int(os.environ.get('PORT', 7860))  # Gunakan port dari Render, default 7860
+    PORT = int(os.environ.get('PORT', 7860))
     Handler = http.server.SimpleHTTPRequestHandler
-
     class SilentHandler(Handler):
         def log_message(self, format, *args):
             pass
-
     socketserver.TCPServer.allow_reuse_address = True
     try:
         with socketserver.TCPServer(("", PORT), SilentHandler) as httpd:
@@ -294,7 +301,6 @@ def run_dummy_server():
 
 if __name__ == "__main__":
     threading.Thread(target=run_dummy_server, daemon=True).start()
-
     try:
         client.run(DISCORD_TOKEN)
     except discord.errors.LoginFailure:
